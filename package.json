@@ -1,0 +1,39 @@
+{
+  "name": "tabby-ai-cmds",
+  "version": "1.0.0",
+  "description": "Lightweight AI-ready quick command manager for Tabby - command palette, groups, search, and one-click terminal execution (AI modules planned)",
+  "homepage": "https://github.com/xyblue135/tabby-ai-cmds",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xyblue135/tabby-ai-cmds.git"
+  },
+  "keywords": [
+    "terminus-plugin",
+    "tabby-plugin",
+    "quick-commands",
+    "tabby",
+    "ai",
+    "ai-commands"
+  ],
+  "main": "dist/index.js",
+  "author": "xyblue135",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc"
+  },
+  "engines": {
+    "node": ">=14.0.0 <26.0.0"
+  },
+  "peerDependencies": {
+    "@angular/common": ">=13.0.0",
+    "@angular/core": ">=13.0.0",
+    "@angular/forms": ">=13.0.0",
+    "@ng-bootstrap/ng-bootstrap": ">=12.0.0",
+    "tabby-core": ">=1.0.0",
+    "tabby-settings": ">=1.0.0",
+    "tabby-terminal": ">=1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}

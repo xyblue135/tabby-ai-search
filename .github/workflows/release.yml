@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      # Peer deps (Tabby / Angular) are provided by Tabby at runtime and are
+      # declared only as peerDependencies, so skip auto-installing them.
+      - name: Install build tooling
+        run: npm install --legacy-peer-deps
+
+      - name: Build (TypeScript -> dist)
+        run: npm run build
+
+      - name: Package plugin zip
+        run: python3 .github/scripts/package.py
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: tabby-ai-cmds.zip

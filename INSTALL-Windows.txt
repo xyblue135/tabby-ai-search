@@ -1,0 +1,16 @@
+AI Commands 安装说明（Windows）
+
+1. 若已安装 tabby-quick-cmds 或 tabby-quick-cmds-lite，先在 Tabby 中禁用/删除，避免 Alt+Q 冲突。
+2. 将本文件所在的整个 tabby-ai-cmds 文件夹复制到：
+   %APPDATA%\tabby\plugins\node_modules\
+3. 重启 Tabby。
+4. 按 Alt+Q 打开命令面板，或点击工具栏终端图标。
+
+兼容说明：
+- 继续读取旧插件的 qc.cmds 命令数据。
+- name / text / group / appendCR 会继续使用。
+- shortcut / profileIds / usageCount 等旧字段不会参与运行。
+- 旧版参数弹窗功能未包含；若旧命令依赖 ${参数名} 弹窗，请先改成普通 shell 变量或固定命令。
+
+AI 模块：当前版本为纯命令管理器，AI 能力将在后续版本加入。
+建议：第一次使用前先备份 Tabby 配置文件。
