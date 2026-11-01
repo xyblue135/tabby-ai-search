@@ -1,0 +1,44 @@
+Quick Commands Lite 1.3.1 安装说明（Windows）
+
+一、装什么
+  底部常驻命令输入条（WindTerm 风格）：
+  - 输入命令按回车 -> 直接发送到当前终端
+  - 输入关键字      -> 上方列出匹配的收藏命令，↑↓ 选、回车执行、Tab 填入输入框
+  - Ctrl+S          -> 把输入内容存成新的收藏命令
+  - ☰ 打开命令管理器，⌄ 收起输入条，分组下拉可按分组过滤
+  - 「AI 找命令」：用 AI 从收藏里检索命令（接口地址和密钥在插件设置页里填）
+
+二、安装步骤
+  1. 先在 Tabby 里禁用或删除原 tabby-quick-cmds / tabby-windy-quick-commands，避免 Alt+Q 冲突。
+  2. 将本文件所在的整个 tabby-quick-cmds-lite 文件夹复制到：
+     %APPDATA%\tabby\plugins\node_modules\
+     （覆盖旧版时，ai-settings.json 是机器本地的 AI 设置兜底，保留不覆盖）
+  3. 重启 Tabby。
+  4. 终端下方会出现输入条；若没有，按 Alt+Q，或打开
+     「设置 → Quick Commands Lite」把"显示底部输入条"勾上。
+
+三、快捷键
+  Alt+Q        聚焦底部命令输入条（可改）
+  Alt+Shift+Q  打开命令管理器（可改）
+  两个都能在「设置 → 快捷键」里修改。
+
+四、兼容说明
+  - 继续读取旧插件的 qc.cmds 命令数据（name / text / group）。
+  - 旧版的 shortcut / profileIds / usageCount / appendCR 等字段不参与运行。
+  - 旧版参数弹窗已移除；如果你的旧命令依赖 ${参数名} 弹窗，请先改成普通 shell 变量或固定命令。
+  - 多行命令现在整段发送：for/while、反斜杠续行、heredoc 不会被拆散。
+    如果你希望某条命令仍然逐行执行，在命令里加一行 `\s毫秒`（延时行）即可切到逐行模式。
+  - 回车符默认 CR（等同手动按回车）。个别设备只认 LF 时，可在设置页改成 LF 或 CRLF。
+  - AI 密钥建议填在设置页并保存（写进 config.yaml 的 qc.ai）；插件目录的 ai-settings.json
+    只是无配置时的兜底，不要把它（连同密钥）提交到仓库。
+
+五、卸载 / 回滚
+  删除 tabby-quick-cmds-lite 文件夹并重启 Tabby 即可。收藏数据保存在 config.yaml 的 qc.cmds 里，不会丢。
+  回滚旧版本：从 git 仓库（github.com/xyblue135/tabby-ai-search）检出对应提交后重新复制。
+
+六、常见问题
+  - 输入条没出现：确认当前标签是终端；检查设置页开关；确认 config.yaml 的 pluginBlacklist 里没有本插件。
+  - 命令没执行：换一下"执行时发送的回车符"（CR / LF / CRLF）。
+  - 不要用 Tabby 的插件管理器安装本插件（它不在 npm 上，会报 404）。
+
+建议：第一次使用前先备份 Tabby 配置文件。
