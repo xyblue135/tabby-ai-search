@@ -96,6 +96,34 @@ function preview (text, max) {
     return flat.length > limit ? `${flat.slice(0, limit)}…` : flat
 }
 
+/** 相对时间："刚刚" / "N 分钟前" / ...；超过 30 天显示日期。ts 为空返回 '' */
+function relativeTime (ts, now) {
+    const time = Number(ts)
+    if (!time) {
+        return ''
+    }
+    const ref = Number(now) || Date.now()
+    const diff = Math.max(0, ref - time)
+    const MINUTE = 60000
+    const HOUR = 3600000
+    const DAY = 86400000
+    if (diff < MINUTE) {
+        return '刚刚'
+    }
+    if (diff < HOUR) {
+        return `${Math.floor(diff / MINUTE)} 分钟前`
+    }
+    if (diff < DAY) {
+        return `${Math.floor(diff / HOUR)} 小时前`
+    }
+    if (diff < DAY * 30) {
+        return `${Math.floor(diff / DAY)} 天前`
+    }
+    const date = new Date(time)
+    const pad = value => String(value).padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
 function tokenize (query) {
     return String(query == null ? '' : query)
         .toLocaleLowerCase()
@@ -252,6 +280,7 @@ module.exports = {
     terminatorFor,
     buildSendPlan,
     preview,
+    relativeTime,
     tokenize,
     isSubsequence,
     matchCommands,

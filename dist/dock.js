@@ -803,6 +803,33 @@ class QuickCmdsDock {
         this.refresh(true)
     }
 
+    /** 整理页"撤销丢弃"：把刚删的条目放回历史并置顶 */
+    restoreHistoryText (entry) {
+        const store = this.api.config.store
+        if (!store) {
+            return
+        }
+        const text = String(entry && entry.text ? entry.text : '').trim()
+        if (!text) {
+            return
+        }
+        if (!store.qc) {
+            store.qc = {}
+        }
+        if (!store.qc.dock) {
+            store.qc.dock = {}
+        }
+        const history = this.history().filter(item => item.text !== text)
+        history.unshift({
+            text,
+            count: Number(entry.count) > 0 ? Number(entry.count) : 1,
+            ts: Number(entry.ts) || Date.now(),
+        })
+        store.qc.dock.history = history.slice(0, this.settings().historySize)
+        this.api.markDirty()
+        this.refresh(true)
+    }
+
     /** 待整理数 = 不在收藏里的历史条数；顺带刷新整理按钮的角标 */
     updateOrganizerBadge () {
         let count = 0

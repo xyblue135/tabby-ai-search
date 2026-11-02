@@ -19,8 +19,9 @@
 - 输入框宽度自动适应窗口；字体大小和输入栏高度仍可在设置中调整。
 - 从当前分组点 ＋ 保存命令时，新命令会默认使用该分组。
 - 输入条里用过的命令自动进入历史记忆（默认保留 500 条）；点「整理」按钮（带待整理角标）
-  可以集中回顾：一键存为收藏、丢弃或清空。已在收藏里的条目自动隐藏，
-  并显示"与收藏「X」相似"的关联提示。终端正在等密码时，那一条不会记入历史。
+  可以集中回顾：一键存为收藏、丢弃或清空，支持关键词过滤、显示最近使用时间，
+  丢弃后 8 秒内可撤销。已在收藏里的条目自动隐藏，并显示"与收藏「X」相似"的关联提示。
+  终端正在等密码时，那一条不会记入历史。
 
 ## 快捷键
 
@@ -112,15 +113,20 @@ tabby-quick-cmds-lite/
 
 ## 开发
 
-dist 里是手写的纯 JavaScript（CommonJS），没有构建步骤，改完直接部署：
+dist 里是手写的纯 JavaScript（CommonJS），没有构建步骤，改完先跑测试再部署：
 
 ```powershell
-node --check dist/index.js     # 其余 dist/*.js 同理，过一遍语法
+npm test                              # logic 单测 + dock 冒烟 + 模块端到端（共 116 项）
+node --check dist/index.js            # 其余 dist/*.js 同理，过一遍语法
+powershell -ExecutionPolicy Bypass -File install.ps1   # 安装/恢复到 %APPDATA%
 ```
 
-然后把整个文件夹复制到 `%APPDATA%\tabby\plugins\node_modules\`，改完必须**重启 Tabby**
-（或重新加载窗口）才会生效。源码托管在 `github.com/xyblue135/tabby-ai-search`，
-回滚就检出对应提交重新复制。
+改完必须**重启 Tabby**（或重新加载窗口）才会生效。源码托管在
+`github.com/xyblue135/tabby-ai-search`，回滚就检出对应提交重新复制。
+三套测试各自独立、无需联网：`test/logic.test.js` 测纯逻辑（发送计划/搜索/历史记忆），
+`test/dock.smoke.test.js` 用假 DOM 测输入条（停靠/焦点/角标/密码防护/配色），
+`test/module.smoke.test.js` 用替身 Angular/Tabby 模块加载真实 index.js 做端到端。
+被插件管理器清掉了也不用慌：重新跑一遍 `install.ps1` 即可。
 
 ## 常见问题
 

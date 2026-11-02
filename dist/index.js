@@ -93,7 +93,7 @@ let CommandStoreService = class CommandStoreService {
         }
         this.groupCache = Array.from(groups).sort((a, b) => a.localeCompare(b));
         this.ungrouped = ungrouped;
-        this.textSet = new Set(this.index.map(item => String(item.cmd.text || '').trim()));
+        this.textSet = new Set(this.index.map(item => String(item.cmd.text || '').trim()).filter(text => text));
         if (changed) {
             this.idsAssigned = true;
         }
@@ -631,6 +631,30 @@ let QuickCmdsLiteDockService = class QuickCmdsLiteDockService {
             .filter(item => item.text !== text);
         this.config.save().catch(() => null);
     }
+    /** 整理页"撤销丢弃"：把刚删的条目放回历史 */
+    restoreHistory(entry) {
+        if (this.dock) {
+            this.dock.restoreHistoryText(entry);
+            return;
+        }
+        const dock = this.qcDock(true);
+        if (!dock) {
+            return;
+        }
+        const text = String(entry && entry.text ? entry.text : '').trim();
+        if (!text) {
+            return;
+        }
+        const history = logic_1.normalizeHistory(Array.isArray(dock.history) ? dock.history : [])
+            .filter(item => item.text !== text);
+        history.unshift({
+            text,
+            count: Number(entry.count) > 0 ? Number(entry.count) : 1,
+            ts: Number(entry.ts) || Date.now(),
+        });
+        dock.history = history;
+        this.config.save().catch(() => null);
+    }
     /** 历史记录这类高频写入：合并后再落盘，避免每敲一次回车都重写整份配置文件 */
     markDirty() {
         if (this.saveTimer) {
@@ -655,6 +679,33 @@ QuickCmdsLiteDockService = __decorate([
 ], QuickCmdsLiteDockService);
 // -------------------------------------------------------------------- 管理器
 const { CommandPreview } = require('./preview');
+/** 剪贴板写入 + 兜底（async Clipboard API 不可用时退回 execCommand），完成后回调一次 */
+function copyTextToClipboard(text, onDone) {
+    const finish = () => { if (typeof onDone === 'function') { onDone(); } };
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(finish).catch(finish);
+            return;
+        }
+    }
+    catch (error) {
+        // 走下面的兜底
+    }
+    try {
+        const holder = document.createElement('textarea');
+        holder.value = text;
+        holder.style.position = 'fixed';
+        holder.style.opacity = '0';
+        document.body.appendChild(holder);
+        holder.select();
+        document.execCommand('copy');
+        document.body.removeChild(holder);
+        finish();
+    }
+    catch (error) {
+        // 复制失败就保持原样
+    }
+}
 const MODAL_TEMPLATE = `
 <div class="qcl-shell" [class.qcl-editor-only]="editorOnly || editing">
   <div class="qcl-header">
@@ -771,10 +822,9 @@ const MODAL_STYLES = `
 }
 `;
 let QuickCmdsLiteModalComponent = class QuickCmdsLiteModalComponent {
-    constructor(modalInstance, store, executor, app, dockService, cdr) {
+    constructor(modalInstance, store, app, dockService, cdr) {
         this.modalInstance = modalInstance;
         this.store = store;
-        this.executor = executor;
         this.app = app;
         this.dockService = dockService;
         this.cdr = cdr;
@@ -917,40 +967,16 @@ let QuickCmdsLiteModalComponent = class QuickCmdsLiteModalComponent {
     }
     copy(cmd, event) {
         event.stopPropagation();
-        const text = cmd.text || '';
-        const done = () => {
+        copyTextToClipboard(cmd.text || '', () => {
             this.copiedId = cmd.id;
+            this.cdr.markForCheck();
             setTimeout(() => {
                 if (this.copiedId === cmd.id) {
                     this.copiedId = null;
                     this.cdr.markForCheck();
                 }
             }, 1200);
-            this.cdr.markForCheck();
-        };
-        try {
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(text).then(done).catch(done);
-                return;
-            }
-        }
-        catch (error) {
-            // 落到下面的兜底方案
-        }
-        try {
-            const holder = document.createElement('textarea');
-            holder.value = text;
-            holder.style.position = 'fixed';
-            holder.style.opacity = '0';
-            document.body.appendChild(holder);
-            holder.select();
-            document.execCommand('copy');
-            document.body.removeChild(holder);
-            done();
-        }
-        catch (error) {
-            // 复制失败就保持原样
-        }
+        });
     }
     close() {
         this.commandPreview.hide();
@@ -976,7 +1002,6 @@ QuickCmdsLiteModalComponent = __decorate([
     }),
     __metadata("design:paramtypes", [ng_bootstrap_1.NgbActiveModal,
         CommandStoreService,
-        CommandExecutorService,
         tabby_core_1.AppService,
         QuickCmdsLiteDockService,
         core_1.ChangeDetectorRef])
@@ -994,13 +1019,20 @@ const ORGANIZER_TEMPLATE = `
       <button class="btn btn-sm btn-outline-secondary" type="button" (click)="close()">关闭</button>
     </div>
   </div>
+  <div class="qcl-organizer-toolbar" *ngIf="pending.length || query">
+    <input class="form-control" type="text" [(ngModel)]="query" (ngModelChange)="onQueryChanged()" placeholder="过滤历史命令（空格分隔多个关键词）...">
+  </div>
+  <div class="qcl-undo" *ngIf="lastDiscarded">
+    已丢弃「{{ previewText(lastDiscarded.text) }}」
+    <button class="btn btn-sm btn-outline-secondary" type="button" (click)="undoDiscard()">撤销</button>
+  </div>
   <div class="qcl-organizer">
-    <div class="qcl-empty" *ngIf="!pending.length">没有待整理的命令 —— 在底部输入条里用过的命令会自动出现在这里</div>
+    <div class="qcl-empty" *ngIf="!pending.length">{{ query ? '没有匹配的历史命令' : '没有待整理的命令 —— 在底部输入条里用过的命令会自动出现在这里' }}</div>
     <div class="qcl-row" *ngFor="let item of visible; trackBy: trackItem"
       (mouseenter)="showPreview(item, $event)" (mouseleave)="hidePreview()">
       <div class="qcl-row-content">
         <span class="qcl-name">{{ previewText(item.text) }}</span>
-        <div class="qcl-meta">用了 {{ item.count }} 次<ng-container *ngIf="item.similar"> · 与收藏「{{ item.similar.name }}」相似，可考虑丢弃</ng-container></div>
+        <div class="qcl-meta">用了 {{ item.count }} 次<ng-container *ngIf="item.time"> · {{ item.time }}</ng-container><ng-container *ngIf="item.similar"> · 与收藏「{{ item.similar.name }}」相似，可考虑丢弃</ng-container></div>
       </div>
       <div class="qcl-actions">
         <button class="btn btn-sm btn-outline-primary" type="button" title="打开编辑并保存为收藏命令" (click)="save(item)">存为收藏</button>
@@ -1017,6 +1049,8 @@ const ORGANIZER_TEMPLATE = `
 const ORGANIZER_STYLES = [MODAL_STYLES, `
 .qcl-organizer-shell { min-height: 420px; }
 .qcl-organizer { flex: 1; min-height: 0; overflow: auto; padding: 10px 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.qcl-organizer-toolbar { padding: 10px 14px 0; }
+.qcl-undo { display: flex; gap: 10px; align-items: center; padding: 8px 14px; border-bottom: 1px solid rgba(127,127,127,.2); font-size: 12px; }
 `];
 let QuickCmdsLiteOrganizerComponent = class QuickCmdsLiteOrganizerComponent {
     constructor(modalInstance, store, dockService, config, cdr) {
@@ -1028,7 +1062,10 @@ let QuickCmdsLiteOrganizerComponent = class QuickCmdsLiteOrganizerComponent {
         this.pending = [];
         this.visible = [];
         this.limit = 100;
+        this.query = '';
         this.copiedText = null;
+        this.lastDiscarded = null;
+        this.undoTimer = null;
         this.commandPreview = new CommandPreview();
         this.changeSubscription = null;
     }
@@ -1040,6 +1077,7 @@ let QuickCmdsLiteOrganizerComponent = class QuickCmdsLiteOrganizerComponent {
     }
     ngOnDestroy() {
         this.commandPreview.destroy();
+        this.clearUndoTimer();
         if (this.changeSubscription) {
             this.changeSubscription.unsubscribe();
             this.changeSubscription = null;
@@ -1047,16 +1085,22 @@ let QuickCmdsLiteOrganizerComponent = class QuickCmdsLiteOrganizerComponent {
     }
     refresh() {
         const favorites = this.store.favoriteTexts();
+        const tokens = logic_1.tokenize(this.query);
         // 拷贝一份再做展示标注，避免把 similar 字段写回配置文件
         const items = this.dockService.historyEntries()
             .filter(item => item && item.text && !favorites.has(item.text))
-            .map(item => ({ text: item.text, count: item.count || 1, ts: item.ts || null, similar: null }));
+            .map(item => ({ text: item.text, count: item.count || 1, ts: item.ts || null, time: logic_1.relativeTime(item.ts), similar: null }))
+            .filter(item => !tokens.length || tokens.every(token => item.text.toLocaleLowerCase().includes(token)));
         for (let i = 0; i < items.length; i++) {
             items[i].similar = i < 100 ? logic_1.findSimilarFavorite(this.store.index, items[i].text) : null;
         }
         this.pending = items;
         this.visible = items.slice(0, this.limit);
         this.cdr.markForCheck();
+    }
+    onQueryChanged() {
+        this.limit = 100;
+        this.refresh();
     }
     showMore() {
         this.limit += 100;
@@ -1077,30 +1121,7 @@ let QuickCmdsLiteOrganizerComponent = class QuickCmdsLiteOrganizerComponent {
         this.dockService.saveAsCommand(item.text);
     }
     copy(item) {
-        const text = item.text;
-        try {
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(text).then(() => this.markCopied(text)).catch(() => null);
-                return;
-            }
-        }
-        catch (error) {
-            // 走下面的兜底
-        }
-        try {
-            const holder = document.createElement('textarea');
-            holder.value = text;
-            holder.style.position = 'fixed';
-            holder.style.opacity = '0';
-            document.body.appendChild(holder);
-            holder.select();
-            document.execCommand('copy');
-            document.body.removeChild(holder);
-            this.markCopied(text);
-        }
-        catch (error) {
-            // 复制失败就保持原样
-        }
+        copyTextToClipboard(item.text, () => this.markCopied(item.text));
     }
     markCopied(text) {
         this.copiedText = text;
@@ -1114,7 +1135,31 @@ let QuickCmdsLiteOrganizerComponent = class QuickCmdsLiteOrganizerComponent {
     }
     discard(item) {
         this.commandPreview.hide();
+        this.lastDiscarded = item;
+        this.clearUndoTimer();
+        // 撤销条在弹窗里待 8 秒，超时视为放弃（历史这时已落盘或即将落盘，都不影响恢复）
+        this.undoTimer = setTimeout(() => {
+            this.undoTimer = null;
+            this.lastDiscarded = null;
+            this.cdr.markForCheck();
+        }, 8000);
         this.dockService.discardHistory(item.text);
+        this.refresh();
+    }
+    clearUndoTimer() {
+        if (this.undoTimer) {
+            clearTimeout(this.undoTimer);
+            this.undoTimer = null;
+        }
+    }
+    undoDiscard() {
+        const entry = this.lastDiscarded;
+        if (!entry) {
+            return;
+        }
+        this.clearUndoTimer();
+        this.lastDiscarded = null;
+        this.dockService.restoreHistory(entry);
         this.refresh();
     }
     clearAll() {
@@ -1309,8 +1354,9 @@ let QuickCmdsLiteSettingsTabComponent = class QuickCmdsLiteSettingsTabComponent 
     testAI() {
         const cfg = { baseURL: this.aiBaseURL, apiKey: this.aiApiKey, model: this.aiModel || 'auto', protocol: this.aiProtocol || 'chat' };
         this.aiStatus = '正在连接…';
-        // request() 的回调（Node http）在 Angular 区域外，状态要显式带回 zone 里刷新
-        ai_1.request(cfg, '只回答 OK', new AbortController().signal)
+        // request() 的回调（Node http）在 Angular 区域外，状态要显式带回 zone 里刷新；
+        // 返回 promise 方便测试等待结果
+        return ai_1.request(cfg, '只回答 OK', new AbortController().signal)
             .then(() => this.zone.run(() => { this.aiStatus = '连接成功' }))
             .catch(e => this.zone.run(() => { this.aiStatus = '连接失败：' + String(e && e.message ? e.message : e) }));
     }

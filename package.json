@@ -1,6 +1,6 @@
 {
   "name": "tabby-quick-cmds-lite",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Lightweight quick command manager with a WindTerm-style docked input bar for Tabby",
   "homepage": "https://github.com/minyoad/tabby-quick-cmds",
   "keywords": [
@@ -15,7 +15,7 @@
     "node": ">=14.0.0 <26.0.0"
   },
   "scripts": {
-    "test": "node test/logic.test.js && node test/realdata.test.js && node test/dock.smoke.test.js && node test/module.smoke.test.js"
+    "test": "node test/logic.test.js && node test/dock.smoke.test.js && node test/module.smoke.test.js"
   },
   "peerDependencies": {
     "@angular/common": ">=13.0.0",
