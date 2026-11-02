@@ -135,6 +135,30 @@ function scoreEntry (entry, tokens) {
 }
 
 /**
+ * 找出与一段命令文本最相似的收藏（用于"整理记忆"里的关联提示）。
+ * 拿文本的前几个关键词给收藏打分，名称命中权重最高；不够相似返回 null。
+ */
+function findSimilarFavorite (index, text, threshold) {
+    const tokens = tokenize(text).slice(0, 8)
+    if (!tokens.length) {
+        return null
+    }
+    let best = null
+    let bestScore = 0
+    for (const entry of index) {
+        const score = scoreEntry(entry, tokens)
+        if (score > bestScore) {
+            bestScore = score
+            best = entry
+        }
+    }
+    if (!best || bestScore < (threshold || 10)) {
+        return null
+    }
+    return { name: String(best.cmd.name || '未命名命令'), score: bestScore }
+}
+
+/**
  * 搜索 / 过滤命令。
  * 与旧版相比：支持多关键词（全部命中才算匹配，空格分隔），
  * 可选按相关度排序 + 名称子序列模糊匹配。
@@ -175,15 +199,52 @@ function matchCommands (index, query, group, limit, options) {
     }
 }
 
-/** 历史记录：去重、限长、最新在前 */
+/** 历史记录：去重、限长、最新在前。条目为 {text, count, ts} 对象，兼容旧的纯字符串数据 */
 function pushHistoryEntry (history, text, size) {
     const value = String(text == null ? '' : text).trim()
     if (!value) {
-        return history.slice()
+        return normalizeHistory(history).slice()
     }
-    const next = history.filter(item => item !== value)
-    next.unshift(value)
-    return next.slice(0, size > 0 ? size : 30)
+    const previous = normalizeHistory(history)
+    const next = previous.filter(item => item.text !== value)
+    const existing = previous.find(item => item.text === value)
+    next.unshift(existing
+        ? { text: value, count: (existing.count || 1) + 1, ts: Date.now() }
+        : { text: value, count: 1, ts: Date.now() })
+    return next.slice(0, size > 0 ? size : 500)
+}
+
+/**
+ * 旧版历史是纯字符串数组，1.4.0 起是 {text, count, ts} 对象。
+ * 已是对象数组时原样返回（每秒心跳都会调用，避免无谓的重建）。
+ */
+function normalizeHistory (history) {
+    if (!Array.isArray(history)) {
+        return []
+    }
+    let needs = false
+    for (const item of history) {
+        if (!item || typeof item !== 'object' || typeof item.text !== 'string') {
+            needs = true
+            break
+        }
+    }
+    if (!needs) {
+        return history
+    }
+    const next = []
+    for (const item of history) {
+        if (typeof item === 'string' && item.trim()) {
+            next.push({ text: item.trim(), count: 1, ts: null })
+        } else if (item && typeof item === 'object' && typeof item.text === 'string' && item.text.trim()) {
+            next.push({
+                text: item.text.trim(),
+                count: Number(item.count) > 0 ? Number(item.count) : 1,
+                ts: Number(item.ts) || null,
+            })
+        }
+    }
+    return next
 }
 
 module.exports = {
@@ -194,5 +255,8 @@ module.exports = {
     tokenize,
     isSubsequence,
     matchCommands,
+    scoreEntry,
+    findSimilarFavorite,
     pushHistoryEntry,
+    normalizeHistory,
 }

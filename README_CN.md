@@ -18,6 +18,9 @@
 - 命令管理器同样只常显名称，悬停显示正文和操作入口；键盘聚焦也可查看。
 - 输入框宽度自动适应窗口；字体大小和输入栏高度仍可在设置中调整。
 - 从当前分组点 ＋ 保存命令时，新命令会默认使用该分组。
+- 输入条里用过的命令自动进入历史记忆（默认保留 500 条）；点「整理」按钮（带待整理角标）
+  可以集中回顾：一键存为收藏、丢弃或清空。已在收藏里的条目自动隐藏，
+  并显示"与收藏「X」相似"的关联提示。终端正在等密码时，那一条不会记入历史。
 
 ## 快捷键
 
@@ -43,7 +46,7 @@ qc:
   dock:
     enabled: true        # 是否显示底部输入条
     maxSuggestions: 10   # 最多同时给出多少条建议
-    historySize: 30      # 历史保留多少条
+    historySize: 500      # 历史记忆保留多少条（整理与建议的数据源）
     history: []          # 最近发送过的命令（自动维护）
     saveHistory: true    # 是否记录历史
     showHistory: true    # 是否在建议列表里显示历史
@@ -55,6 +58,7 @@ qc:
     protocol: chat       # chat / responses / messages
     excludedGroups: []   # 不参与 AI 检索的分组
     candidateLimit: 50   # 最多发送给 AI 的候选命令条数
+    includeHistory: false # 是否把输入历史也纳入 AI 检索（收藏+历史一起作为语料）
 hotkeys:
   qc: [Alt-Q]
   qc-manager: [Alt-Shift-Q]

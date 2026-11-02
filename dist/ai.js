@@ -3,7 +3,7 @@ const fs = require('fs')
 const path = require('path')
 const configPath = path.join(__dirname, '..', 'ai-settings.json')
 function settings (api) {
-    const defaults = { baseURL: 'http://127.0.0.1:31415/v1', apiKey: '', model: 'auto', protocol: 'chat', excludedGroups: [], candidateLimit: 50 }
+    const defaults = { baseURL: 'http://127.0.0.1:31415/v1', apiKey: '', model: 'auto', protocol: 'chat', excludedGroups: [], candidateLimit: 50, includeHistory: false }
     const stored = api && api.config && api.config.store && api.config.store.qc && api.config.store.qc.ai
     if (stored) return Object.assign(defaults, stored)
     let saved = {}
@@ -76,10 +76,32 @@ function parseMatches (text, data) {
     const seen = new Set()
     return result.matches.filter(m => Number.isInteger(m.id) && m.id > 0 && m.id <= data.items.length && !seen.has(m.id) && seen.add(m.id)).map(m => ({ cmd: data.items[m.id - 1], reason: String(m.reason || '') }))
 }
+/** 把输入历史并入检索语料（RAG 式：收藏 + 历史 = 知识库）；与收藏重复的文本跳过 */
+function mergeHistoryCandidates (commands, history) {
+    if (!history || !history.length) return commands
+    const known = new Set(commands.map(c => String(c.text || '').trim()))
+    const merged = commands.slice()
+    for (const item of history) {
+        const text = String(item && item.text ? item.text : '').trim()
+        if (!text || known.has(text)) continue
+        known.add(text)
+        const firstLine = text.split(/\r?\n/)[0]
+        const countSuffix = Number(item.count) > 1 ? ` ×${Number(item.count)}` : ''
+        merged.push({ name: firstLine.slice(0, 60) + countSuffix, group: '历史', text })
+    }
+    return merged
+}
+
 function open (api) {
     const existing = document.getElementById('qcl-ai-overlay')
     if (existing && existing.removePanel) { existing.removePanel(); return }
     const cfg = settings(api); let controller = null; let closed = false
+    const buildCommands = () => {
+        const base = api.store.ensureStore()
+        return cfg.includeHistory && typeof api.history === 'function'
+            ? mergeHistoryCandidates(base, api.history())
+            : base
+    }
     const el = (tag, parent, text) => { const n = document.createElement(tag); if (text != null) n.textContent = text; if (parent) parent.appendChild(n); return n }
     const overlay = el('div', document.body); overlay.id = 'qcl-ai-overlay'
     overlay.style.cssText = 'position:fixed;inset:0;z-index:11000;background:#0008;display:flex;align-items:center;justify-content:center;color:#eee'
@@ -87,14 +109,14 @@ function open (api) {
     const style = el('style', panel); style.textContent = '#qcl-ai-overlay button{background:#384657;color:white;border:1px solid #8290a1;border-radius:4px;padding:7px 12px;cursor:pointer}#qcl-ai-overlay button:disabled{opacity:.5}#qcl-ai-overlay input{background:#303640;color:#fff;border:1px solid #768092;border-radius:4px;padding:9px;width:100%}#qcl-ai-aiwork{display:grid;grid-template-columns:minmax(260px,1fr) minmax(360px,1.25fr);gap:14px;flex:1;min-height:0}#qcl-ai-output{display:none;overflow:auto;background:#15191e;border:1px solid #687080;border-radius:6px;padding:10px;user-select:text}#qcl-ai-output.open{display:block}#qcl-ai-output pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#e4efff;background:#101318;padding:10px}#qcl-ai-form{display:flex;flex-direction:column;gap:10px}#qcl-ai-form textarea{flex:1;resize:vertical;min-height:180px;background:#303640;color:#fff;border:1px solid #768092;border-radius:4px;padding:10px;font:14px sans-serif}#qcl-ai-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.qcl-spinner{display:inline-block;width:14px;height:14px;border:2px solid #9ba9ba;border-top-color:transparent;border-radius:50%;animation:qclspin .8s linear infinite}@keyframes qclspin{to{transform:rotate(360deg)}}'
     const head = el('div', panel); head.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:12px'; el('h3', head, 'AI 找命令')
     const close = el('button', head, '关闭'); const work = el('div', panel); work.id = 'qcl-ai-aiwork'; const form = el('div', work); form.id = 'qcl-ai-form'; el('label', form, '输入你的需求'); const query = el('textarea', form); query.placeholder = '例如：找出查看 Docker 容器日志的命令'; const actions = el('div', form); actions.id = 'qcl-ai-actions'; const search = el('button', actions, '开始检索'); const outputToggle = el('button', actions, '显示输出'); const status = el('span', actions); const output = el('div', work); output.id = 'qcl-ai-output'
-    let data = corpus(api.store.ensureStore(), cfg); const countLabel = el('small', form, `可检索 ${data.chars.toLocaleString()} 字符 · 候选上限 ${cfg.candidateLimit}`)
+    let data = corpus(buildCommands(), cfg); const countLabel = el('small', form, `可检索 ${data.chars.toLocaleString()} 字符 · 候选上限 ${cfg.candidateLimit}`)
     const escape = event => { if (event.key === 'Escape') { event.stopImmediatePropagation(); overlay.removePanel() } }; document.addEventListener('keydown', escape, true)
     overlay.removePanel = () => { closed = true; if (controller) controller.abort(); overlay.remove(); document.removeEventListener('keydown', escape, true) }
     close.onclick = overlay.removePanel; outputToggle.onclick = () => { output.classList.toggle('open'); outputToggle.textContent = output.classList.contains('open') ? '隐藏输出' : '显示输出' }
     for (const name of ['mousedown','pointerdown','click','keydown','keyup']) panel.addEventListener(name, e => e.stopPropagation())
-    search.onclick = async () => { if (controller || !query.value.trim()) return; if (!cfg.apiKey.trim()) { status.textContent = '请在总设置中填写 API 密钥'; return }; data = corpus(api.store.ensureStore(), cfg, query.value); countLabel.textContent = `可检索 ${data.chars.toLocaleString()} 字符 · 本次发送候选 ${data.candidateChars.toLocaleString()} 字符 · ${data.items.length} 条`; controller = new AbortController(); search.disabled = true; output.classList.add('open'); outputToggle.textContent = '隐藏输出'; output.replaceChildren(); status.innerHTML = '<span class="qcl-spinner"></span> 正在检索…';
+    search.onclick = async () => { if (controller || !query.value.trim()) return; if (!cfg.apiKey.trim()) { status.textContent = '请在总设置中填写 API 密钥'; return }; data = corpus(buildCommands(), cfg, query.value); countLabel.textContent = `可检索 ${data.chars.toLocaleString()} 字符 · 本次发送候选 ${data.candidateChars.toLocaleString()} 字符 · ${data.items.length} 条`; controller = new AbortController(); search.disabled = true; output.classList.add('open'); outputToggle.textContent = '隐藏输出'; output.replaceChildren(); status.innerHTML = '<span class="qcl-spinner"></span> 正在检索…';
         try { const prompt = '你是命令收藏夹检索助手。仅从资料选择相关已有命令，不生成命令。返回纯 JSON：{"matches":[{"id":1,"reason":"匹配原因"}]}，最多10条。用户需求：' + query.value.trim() + '\n命令资料：' + data.text; const answer = await request(cfg, prompt, controller.signal); if (closed) return; const matches = parseMatches(answer, data); status.textContent = matches.length ? `找到 ${matches.length} 条命令` : '没有找到相关命令'; for (const {cmd,reason} of matches) { const row=el('article',output); el('h4',row,(cmd.name||'未命名')+' · '+(cmd.group||'未分组')); el('p',row,reason); el('pre',row,cmd.text||''); const copy=el('button',row,'复制命令'); copy.onclick=async()=>{try{await navigator.clipboard.writeText(cmd.text||'');copy.textContent='已复制'}catch(_){}} } } catch(e) { if (!closed) status.textContent='检索失败：'+String(e.message).split(cfg.apiKey).join('[密钥已隐藏]') } finally { controller=null; if(!closed) search.disabled=false } }
     query.onkeydown = e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); search.click() } }; query.focus()
 }
 
-module.exports = { settings, saveSettings, corpus, request, parseMatches, open }
+module.exports = { settings, saveSettings, corpus, mergeHistoryCandidates, request, parseMatches, open }

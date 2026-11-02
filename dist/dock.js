@@ -167,6 +167,22 @@ const STYLES = `
     font-family: inherit;
     font-size: 10px;
 }
+.qcl-dock-organize { position: relative; }
+.qcl-dock-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: #d9534f;
+    color: #fff;
+    font-size: 10px;
+    line-height: 15px;
+    text-align: center;
+    pointer-events: none;
+}
 `
 
 function createElement (tag, className, text) {
@@ -279,6 +295,7 @@ class QuickCmdsDock {
 
         this.commandPreview = new CommandPreview()
         this.sending = false
+        this.organizerPending = -1
         this.onDocumentMouseDown = event => this.handleDocumentMouseDown(event)
 
         this.el = createElement('div', 'qcl-dock')
@@ -320,6 +337,13 @@ class QuickCmdsDock {
         this.collapseButton.type = 'button'
         this.collapseButton.title = '收起输入条（Alt+Q 可再次唤出）'
 
+        this.organizerButton = createElement('button', 'qcl-dock-btn qcl-dock-organize', '整理')
+        this.organizerButton.type = 'button'
+        this.organizerButton.title = '整理记忆：把输入条里用过的命令收进收藏'
+        this.organizerBadge = createElement('span', 'qcl-dock-badge', '')
+        this.organizerBadge.hidden = true
+        this.organizerButton.appendChild(this.organizerBadge)
+
         bar.appendChild(this.managerButton)
         bar.appendChild(this.groupSelect)
         bar.appendChild(prompt)
@@ -333,6 +357,7 @@ class QuickCmdsDock {
         this.aiButton.type = 'button'
         this.aiButton.addEventListener('click', () => this.api.openAI())
         bar.appendChild(this.aiButton)
+        bar.appendChild(this.organizerButton)
         bar.appendChild(this.saveButton)
         bar.appendChild(this.collapseButton)
         bar.appendChild(this.settingsButton)
@@ -359,6 +384,7 @@ class QuickCmdsDock {
             this.api.setEnabled(false)
         })
         this.saveButton.addEventListener('click', () => this.saveInputAsCommand())
+        this.organizerButton.addEventListener('click', () => this.api.openOrganizer())
         this.sendButton.addEventListener('click', () => this.runInput())
         this.groupSelect.addEventListener('change', () => this.onGroupChanged())
 
@@ -688,7 +714,7 @@ class QuickCmdsDock {
         return {
             enabled: dock.enabled !== false,
             maxSuggestions: toNumber(dock.maxSuggestions, 10),
-            historySize: toNumber(dock.historySize, 30),
+            historySize: toNumber(dock.historySize, 500),
             saveHistory: dock.saveHistory !== false,
             showHistory: dock.showHistory !== false,
             terminator: logic.terminatorFor(dock.terminator),
@@ -702,7 +728,7 @@ class QuickCmdsDock {
     history () {
         const qc = (this.api.config.store && this.api.config.store.qc) || {}
         const dock = qc.dock || {}
-        return Array.isArray(dock.history) ? dock.history : []
+        return logic.normalizeHistory(Array.isArray(dock.history) ? dock.history : [])
     }
 
     pushHistory (text) {
@@ -714,6 +740,10 @@ class QuickCmdsDock {
         if (!store) {
             return
         }
+        // 终端正在等密码时，发出去的这条不是命令，不能记
+        if (this.recentOutputAsksForSecret()) {
+            return
+        }
         if (!store.qc) {
             store.qc = {}
         }
@@ -722,6 +752,75 @@ class QuickCmdsDock {
         }
         store.qc.dock.history = logic.pushHistoryEntry(this.history(), text, settings.historySize)
         this.api.markDirty()
+    }
+
+    /**
+     * 密码防护：读 xterm 可见缓冲区里光标附近 3 行，若行尾是 password / passphrase /
+     * 密码 / 口令 提示（OpenSSH、sudo、mysql 等都是这个形态），判定为敏感输入。
+     * 读不到缓冲区时按"不是密码"处理，不影响正常记录。
+     */
+    recentOutputAsksForSecret () {
+        try {
+            const terminal = this.api.executor && typeof this.api.executor.activeTerminal === 'function'
+                ? this.api.executor.activeTerminal()
+                : null
+            const frontend = terminal && terminal.frontend
+            const buffer = frontend && frontend.xterm && frontend.xterm.buffer ? frontend.xterm.buffer.active : null
+            if (!buffer) {
+                return false
+            }
+            const viewportY = typeof buffer.viewportY === 'number' ? buffer.viewportY : 0
+            const cursorY = typeof buffer.cursorY === 'number' ? buffer.cursorY : 0
+            for (let row = Math.max(0, cursorY - 2); row <= cursorY; row++) {
+                const line = buffer.getLine(viewportY + row)
+                if (!line) {
+                    continue
+                }
+                if (/(password|passphrase|口令|密码)\s*[:：]?\s*$/i.test(line.translateToString(true))) {
+                    return true
+                }
+            }
+        } catch (error) {
+            // 缓冲区不可用就放行
+        }
+        return false
+    }
+
+    /** 整理页"丢弃"单条：从历史里删掉这个文本 */
+    removeHistoryText (text) {
+        const store = this.api.config.store
+        if (!store) {
+            return
+        }
+        if (!store.qc) {
+            store.qc = {}
+        }
+        if (!store.qc.dock) {
+            store.qc.dock = {}
+        }
+        store.qc.dock.history = this.history().filter(item => item.text !== text)
+        this.api.markDirty()
+        this.refresh(true)
+    }
+
+    /** 待整理数 = 不在收藏里的历史条数；顺带刷新整理按钮的角标 */
+    updateOrganizerBadge () {
+        let count = 0
+        const favorites = this.api.store && typeof this.api.store.favoriteTexts === 'function'
+            ? this.api.store.favoriteTexts()
+            : null
+        if (favorites) {
+            for (const item of this.history()) {
+                if (item.text && !favorites.has(item.text)) {
+                    count++
+                }
+            }
+        }
+        if (count !== this.organizerPending) {
+            this.organizerPending = count
+            this.organizerBadge.textContent = count > 99 ? '99+' : String(count)
+            this.organizerBadge.hidden = count === 0
+        }
     }
 
     clearHistory () {
@@ -810,11 +909,12 @@ class QuickCmdsDock {
         this.el.classList.toggle('qcl-dock-pinned', this.isPinned())
         const query = this.input.value
         const history = this.history()
+        this.updateOrganizerBadge()
         const limit = this.group !== GROUP_ALL ? 0 : settings.maxSuggestions
         const revision = typeof this.api.store.revision === 'number' ? this.api.store.revision : 0
         const signature = [
             query, this.group, limit, settings.showHistory, settings.saveHistory,
-            history.length, history[0] || '', revision,
+            history.length, (history[0] && history[0].text) || '', revision,
         ].join('\u0000')
 
         if (!force && signature === this.stateSignature) {
@@ -836,9 +936,9 @@ class QuickCmdsDock {
             if (this.group === GROUP_ALL && settings.showHistory && settings.saveHistory) {
                 const tokens = logic.tokenize(query)
                 const historyRows = this.history()
-                    .filter(item => tokens.every(token => item.toLocaleLowerCase().includes(token)))
+                    .filter(item => tokens.every(token => item.text.toLocaleLowerCase().includes(token)))
                     .slice(0, 3)
-                    .map(item => ({ kind: 'history', name: item, group: '历史', text: '', value: item }))
+                    .map(item => ({ kind: 'history', name: item.text, group: '历史', text: '', value: item.text }))
                 rows = rows.concat(historyRows)
             }
             this.hint.textContent = result.total > rows.length ? `${rows.length}/${result.total}` : `${result.total} 条`
@@ -847,7 +947,7 @@ class QuickCmdsDock {
             if (this.group === GROUP_ALL && settings.showHistory && settings.saveHistory) {
                 rows = this.history()
                     .slice(0, Math.max(limit, 8))
-                    .map(item => ({ kind: 'history', name: item, group: '历史', text: '', value: item })).concat(rows).slice(0, limit)
+                    .map(item => ({ kind: 'history', name: item.text, group: '历史', text: '', value: item.text })).concat(rows).slice(0, limit)
             }
             this.hint.textContent = `${result.total} 条命令`
         }

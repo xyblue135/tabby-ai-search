@@ -25,6 +25,7 @@ let CommandStoreService = class CommandStoreService {
         this.config = config;
         this.source = null;
         this.index = [];
+        this.textSet = new Set();
         this.groupCache = [];
         this.ungrouped = false;
         /** 每次重建索引自增，供底部输入条判断列表是否需要重绘 */
@@ -92,6 +93,7 @@ let CommandStoreService = class CommandStoreService {
         }
         this.groupCache = Array.from(groups).sort((a, b) => a.localeCompare(b));
         this.ungrouped = ungrouped;
+        this.textSet = new Set(this.index.map(item => String(item.cmd.text || '').trim()));
         if (changed) {
             this.idsAssigned = true;
         }
@@ -118,6 +120,11 @@ let CommandStoreService = class CommandStoreService {
     hasUngrouped() {
         this.ensureStore();
         return this.ungrouped;
+    }
+    /** 收藏命令正文的集合（trim 后），供"整理记忆"判断哪条历史还没进收藏 */
+    favoriteTexts() {
+        this.ensureStore();
+        return this.textSet;
     }
     /** rank=true：按相关度排序（底部输入条用）；否则保持原顺序（管理器列表用） */
     search(query, group, limit, rank) {
@@ -490,6 +497,7 @@ let QuickCmdsLiteDockService = class QuickCmdsLiteDockService {
             store: this.store,
             executor: this.executor,
             openManager: () => this.openManager(),
+            openOrganizer: () => this.openOrganizer(),
             editCommand: command => this.editCommand(command),
             openAI: () => this.openAI(false),
             openSettings: () => this.openSettings(),
@@ -547,7 +555,7 @@ let QuickCmdsLiteDockService = class QuickCmdsLiteDockService {
         }
     }
     openAI(settings) {
-        ai_1.open({ store: this.store, config: this.config }, settings);
+        ai_1.open({ store: this.store, config: this.config, history: () => this.historyEntries() }, settings);
     }
     openSettings() {
         this.zone.run(() => { const ref = this.modal.open(QuickCmdsLiteSettingsTabComponent, { size: 'lg', centered: true }); if (ref && ref.componentInstance) ref.componentInstance.modalInstance = ref; });
@@ -555,6 +563,11 @@ let QuickCmdsLiteDockService = class QuickCmdsLiteDockService {
     openManager() {
         this.zone.run(() => {
             this.modal.open(QuickCmdsLiteModalComponent, { size: 'lg', centered: true, backdrop: 'static' });
+        });
+    }
+    openOrganizer() {
+        this.zone.run(() => {
+            this.modal.open(QuickCmdsLiteOrganizerComponent, { size: 'lg', centered: true, backdrop: 'static' });
         });
     }
     editCommand(command) {
@@ -594,6 +607,29 @@ let QuickCmdsLiteDockService = class QuickCmdsLiteDockService {
         }
         dock.history = [];
         this.config.save();
+    }
+    /** 整理页数据源：历史条目（对象化），优先走已挂载的输入条 */
+    historyEntries() {
+        if (this.dock) {
+            return this.dock.history();
+        }
+        const store = this.config.store;
+        const dock = store && store.qc && store.qc.dock;
+        return logic_1.normalizeHistory(Array.isArray(dock && dock.history) ? dock.history : []);
+    }
+    /** 整理页"丢弃"：把这条文本从历史记忆里删掉 */
+    discardHistory(text) {
+        if (this.dock) {
+            this.dock.removeHistoryText(text);
+            return;
+        }
+        const dock = this.qcDock(true);
+        if (!dock) {
+            return;
+        }
+        dock.history = logic_1.normalizeHistory(Array.isArray(dock.history) ? dock.history : [])
+            .filter(item => item.text !== text);
+        this.config.save().catch(() => null);
     }
     /** 历史记录这类高频写入：合并后再落盘，避免每敲一次回车都重写整份配置文件 */
     markDirty() {
@@ -945,6 +981,170 @@ QuickCmdsLiteModalComponent = __decorate([
         QuickCmdsLiteDockService,
         core_1.ChangeDetectorRef])
 ], QuickCmdsLiteModalComponent);
+// ------------------------------------------------------------------ 整理记忆
+const ORGANIZER_TEMPLATE = `
+<div class="qcl-shell qcl-organizer-shell">
+  <div class="qcl-header">
+    <div>
+      <div class="qcl-title">整理记忆</div>
+      <div class="qcl-subtitle">{{ pending.length }} 条用过的命令还没进收藏 · 存为收藏后输入条会自动联想</div>
+    </div>
+    <div>
+      <button class="btn btn-sm btn-outline-danger" type="button" (click)="clearAll()" [disabled]="!pending.length">清空历史</button>
+      <button class="btn btn-sm btn-outline-secondary" type="button" (click)="close()">关闭</button>
+    </div>
+  </div>
+  <div class="qcl-organizer">
+    <div class="qcl-empty" *ngIf="!pending.length">没有待整理的命令 —— 在底部输入条里用过的命令会自动出现在这里</div>
+    <div class="qcl-row" *ngFor="let item of visible; trackBy: trackItem"
+      (mouseenter)="showPreview(item, $event)" (mouseleave)="hidePreview()">
+      <div class="qcl-row-content">
+        <span class="qcl-name">{{ previewText(item.text) }}</span>
+        <div class="qcl-meta">用了 {{ item.count }} 次<ng-container *ngIf="item.similar"> · 与收藏「{{ item.similar.name }}」相似，可考虑丢弃</ng-container></div>
+      </div>
+      <div class="qcl-actions">
+        <button class="btn btn-sm btn-outline-primary" type="button" title="打开编辑并保存为收藏命令" (click)="save(item)">存为收藏</button>
+        <button class="btn btn-sm btn-outline-secondary" type="button" title="复制完整命令" (click)="copy(item)">{{ copiedText === item.text ? '已复制' : '复制' }}</button>
+        <button class="btn btn-sm btn-outline-danger" type="button" title="从记忆中删除这条" (click)="discard(item)">丢弃</button>
+      </div>
+    </div>
+    <button class="btn btn-sm btn-outline-secondary qcl-more" type="button" *ngIf="pending.length > visible.length" (click)="showMore()">
+      显示更多（{{ visible.length }} / {{ pending.length }}）
+    </button>
+  </div>
+</div>
+`;
+const ORGANIZER_STYLES = [MODAL_STYLES, `
+.qcl-organizer-shell { min-height: 420px; }
+.qcl-organizer { flex: 1; min-height: 0; overflow: auto; padding: 10px 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+`];
+let QuickCmdsLiteOrganizerComponent = class QuickCmdsLiteOrganizerComponent {
+    constructor(modalInstance, store, dockService, config, cdr) {
+        this.modalInstance = modalInstance;
+        this.store = store;
+        this.dockService = dockService;
+        this.config = config;
+        this.cdr = cdr;
+        this.pending = [];
+        this.visible = [];
+        this.limit = 100;
+        this.copiedText = null;
+        this.commandPreview = new CommandPreview();
+        this.changeSubscription = null;
+    }
+    ngOnInit() {
+        this.store.initialize();
+        this.refresh();
+        // 在弹出的编辑页里保存后配置会变化，这里跟着刷新"待整理"列表
+        this.changeSubscription = this.config.changed$.subscribe(() => this.refresh());
+    }
+    ngOnDestroy() {
+        this.commandPreview.destroy();
+        if (this.changeSubscription) {
+            this.changeSubscription.unsubscribe();
+            this.changeSubscription = null;
+        }
+    }
+    refresh() {
+        const favorites = this.store.favoriteTexts();
+        // 拷贝一份再做展示标注，避免把 similar 字段写回配置文件
+        const items = this.dockService.historyEntries()
+            .filter(item => item && item.text && !favorites.has(item.text))
+            .map(item => ({ text: item.text, count: item.count || 1, ts: item.ts || null, similar: null }));
+        for (let i = 0; i < items.length; i++) {
+            items[i].similar = i < 100 ? logic_1.findSimilarFavorite(this.store.index, items[i].text) : null;
+        }
+        this.pending = items;
+        this.visible = items.slice(0, this.limit);
+        this.cdr.markForCheck();
+    }
+    showMore() {
+        this.limit += 100;
+        this.visible = this.pending.slice(0, this.limit);
+        this.cdr.markForCheck();
+    }
+    previewText(text) {
+        return logic_1.preview(text, 160);
+    }
+    showPreview(item, event) {
+        this.commandPreview.show(event.currentTarget, item.text, '历史命令');
+    }
+    hidePreview() { this.commandPreview.scheduleHide(); }
+    save(item) {
+        this.commandPreview.hide();
+        // 打开"只编辑"弹窗；保存成功后 config.changed$ 会触发 refresh，
+        // 这条历史因为已经进了收藏而自动从待整理列表消失
+        this.dockService.saveAsCommand(item.text);
+    }
+    copy(item) {
+        const text = item.text;
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(() => this.markCopied(text)).catch(() => null);
+                return;
+            }
+        }
+        catch (error) {
+            // 走下面的兜底
+        }
+        try {
+            const holder = document.createElement('textarea');
+            holder.value = text;
+            holder.style.position = 'fixed';
+            holder.style.opacity = '0';
+            document.body.appendChild(holder);
+            holder.select();
+            document.execCommand('copy');
+            document.body.removeChild(holder);
+            this.markCopied(text);
+        }
+        catch (error) {
+            // 复制失败就保持原样
+        }
+    }
+    markCopied(text) {
+        this.copiedText = text;
+        this.cdr.markForCheck();
+        setTimeout(() => {
+            if (this.copiedText === text) {
+                this.copiedText = null;
+                this.cdr.markForCheck();
+            }
+        }, 1200);
+    }
+    discard(item) {
+        this.commandPreview.hide();
+        this.dockService.discardHistory(item.text);
+        this.refresh();
+    }
+    clearAll() {
+        if (!window.confirm(`清空全部 ${this.dockService.historyEntries().length} 条输入历史？收藏命令不受影响。`)) {
+            return;
+        }
+        this.dockService.clearHistory();
+        this.refresh();
+    }
+    close() {
+        this.commandPreview.hide();
+        this.modalInstance.close();
+    }
+    trackItem(_index, item) {
+        return item.text;
+    }
+};
+QuickCmdsLiteOrganizerComponent = __decorate([
+    (0, core_1.Component)({
+        selector: 'quick-cmds-lite-organizer',
+        template: ORGANIZER_TEMPLATE,
+        styles: ORGANIZER_STYLES,
+        changeDetection: core_1.ChangeDetectionStrategy.OnPush,
+    }),
+    __metadata("design:paramtypes", [ng_bootstrap_1.NgbActiveModal,
+        CommandStoreService,
+        QuickCmdsLiteDockService,
+        tabby_core_1.ConfigService,
+        core_1.ChangeDetectorRef])
+], QuickCmdsLiteOrganizerComponent);
 // -------------------------------------------------------------------- 设置页
 const SETTINGS_TEMPLATE = `
 <div class="settings-tab">
@@ -964,7 +1164,7 @@ const SETTINGS_TEMPLATE = `
     <div class="col-md-6"><label class="form-label">接口类型</label><select class="form-select form-select-sm" [(ngModel)]="aiProtocol"><option value="chat">Chat Completions</option><option value="responses">Responses</option><option value="messages">Anthropic Messages</option></select></div>
   </div>
   <div class="mt-2"><label class="form-label">AI 分组黑名单（未勾选的分组不参与检索）</label><div class="d-flex flex-wrap gap-2"><label *ngFor="let group of aiGroups"><input type="checkbox" [checked]="!aiExcludedGroups.includes(group)" (change)="toggleAiGroup(group, $event.target.checked)"> {{ group || '未分组' }}</label></div><button class="btn btn-sm btn-outline-secondary mt-2" (click)="clearAiGroups()">清空所有勾选</button><button class="btn btn-sm btn-outline-secondary mt-2 ms-2" (click)="selectAiGroups()">全选分组</button></div>
-  <div class="mt-2"><label class="form-label">最多发送给 AI 的候选命令</label><input class="form-control form-control-sm" type="number" min="10" max="200" [(ngModel)]="aiCandidateLimit"></div><div class="mt-2"><button class="btn btn-sm btn-primary" (click)="saveAISettings()">保存 AI 设置</button><button class="btn btn-sm btn-outline-secondary ms-2" (click)="testAI()">测试 AI 连接</button><span class="ms-2">{{ aiStatus }}</span><button class="btn btn-sm btn-outline-secondary ms-2" (click)="dockService.openAI(false)">打开 AI 找命令</button></div>
+  <div class="mt-2"><label class="form-label">最多发送给 AI 的候选命令</label><input class="form-control form-control-sm" type="number" min="10" max="200" [(ngModel)]="aiCandidateLimit"><label class="form-check mt-2"><input type="checkbox" [(ngModel)]="aiIncludeHistory"> 把输入历史也纳入 AI 检索（收藏 + 历史一起作为语料）</label></div><div class="mt-2"><button class="btn btn-sm btn-primary" (click)="saveAISettings()">保存 AI 设置</button><button class="btn btn-sm btn-outline-secondary ms-2" (click)="testAI()">测试 AI 连接</button><span class="ms-2">{{ aiStatus }}</span><button class="btn btn-sm btn-outline-secondary ms-2" (click)="dockService.openAI(false)">打开 AI 找命令</button></div>
   <hr>
   <h5>命令发送</h5>
   <label class="form-check mb-2">
@@ -1000,8 +1200,8 @@ const SETTINGS_TEMPLATE = `
       <input class="form-control form-control-sm" type="number" min="3" max="50" [(ngModel)]="maxSuggestions" (ngModelChange)="apply()">
     </div>
     <div class="col-auto">
-      <label class="form-label">历史保留条数</label>
-      <input class="form-control form-control-sm" type="number" min="0" max="200" [(ngModel)]="historySize" (ngModelChange)="apply()">
+      <label class="form-label">历史记忆条数</label>
+      <input class="form-control form-control-sm" type="number" min="0" max="2000" [(ngModel)]="historySize" (ngModelChange)="apply()">
     </div>
     <div class="col-auto">
       <label class="form-label">执行时发送的回车符</label>
@@ -1045,7 +1245,7 @@ let QuickCmdsLiteSettingsTabComponent = class QuickCmdsLiteSettingsTabComponent 
         this.autoReturn = false;
         this.clickAction = 'send';
         this.fontSize = 14; this.inputHeight = 34; this.inputRatio = 60;
-        this.aiBaseURL = ''; this.aiApiKey = ''; this.aiModel = 'auto'; this.aiProtocol = 'chat'; this.aiGroups = []; this.aiExcludedGroups = []; this.aiCandidateLimit = 50; this.aiStatus = '';
+        this.aiBaseURL = ''; this.aiApiKey = ''; this.aiModel = 'auto'; this.aiProtocol = 'chat'; this.aiGroups = []; this.aiExcludedGroups = []; this.aiCandidateLimit = 50; this.aiIncludeHistory = false; this.aiStatus = '';
         this.hotkeyInput = '';
         this.hotkeyManager = '';
         this.changeSubscription = null;
@@ -1076,12 +1276,12 @@ let QuickCmdsLiteSettingsTabComponent = class QuickCmdsLiteSettingsTabComponent 
         this.saveHistory = dock.saveHistory !== false;
         this.showHistory = dock.showHistory !== false;
         this.maxSuggestions = Number(dock.maxSuggestions) > 0 ? Number(dock.maxSuggestions) : 10;
-        this.historySize = Number(dock.historySize) >= 0 ? Number(dock.historySize) : 30;
+        this.historySize = Number(dock.historySize) >= 0 ? Number(dock.historySize) : 500;
         this.terminator = dock.terminator || 'cr';
         this.autoReturn = store.qc?.autoReturn === true;
         this.clickAction = dock.clickAction === 'fill' ? 'fill' : 'send';
         this.fontSize = Number(dock.fontSize) >= 10 ? Number(dock.fontSize) : 14; this.inputHeight = Number(dock.inputHeight) >= 24 ? Number(dock.inputHeight) : 34; this.inputRatio = Number(dock.inputRatio) >= 20 ? Number(dock.inputRatio) : 60;
-        const ai = ai_1.settings({ config: this.config }); this.aiBaseURL=ai.baseURL; this.aiApiKey=ai.apiKey; this.aiModel=ai.model; this.aiProtocol=ai.protocol; this.aiGroups=this.store.groups().concat(this.store.hasUngrouped() ? [''] : []); this.aiExcludedGroups=Array.isArray(ai.excludedGroups)?ai.excludedGroups.slice():[]; this.aiCandidateLimit=Number(ai.candidateLimit)||50;
+        const ai = ai_1.settings({ config: this.config }); this.aiBaseURL=ai.baseURL; this.aiApiKey=ai.apiKey; this.aiModel=ai.model; this.aiProtocol=ai.protocol; this.aiGroups=this.store.groups().concat(this.store.hasUngrouped() ? [''] : []); this.aiExcludedGroups=Array.isArray(ai.excludedGroups)?ai.excludedGroups.slice():[]; this.aiCandidateLimit=Number(ai.candidateLimit)||50; this.aiIncludeHistory=ai.includeHistory===true;
         this.hotkeyInput = (hotkeys.qc || []).join(' / ');
         this.hotkeyManager = (hotkeys['qc-manager'] || []).join(' / ');
     }
@@ -1094,7 +1294,7 @@ let QuickCmdsLiteSettingsTabComponent = class QuickCmdsLiteSettingsTabComponent 
         dock.saveHistory = this.saveHistory;
         dock.showHistory = this.showHistory;
         dock.maxSuggestions = Number(this.maxSuggestions) > 0 ? Number(this.maxSuggestions) : 10;
-        dock.historySize = Number(this.historySize) >= 0 ? Number(this.historySize) : 30;
+        dock.historySize = Number(this.historySize) >= 0 ? Number(this.historySize) : 500;
         dock.terminator = this.terminator;
         this.config.store.qc.autoReturn = this.autoReturn === true;
         dock.clickAction = this.clickAction === 'fill' ? 'fill' : 'send'; dock.fontSize = Math.max(10, Math.min(24, Number(this.fontSize)||14)); dock.inputHeight = Math.max(24, Math.min(80, Number(this.inputHeight)||34)); dock.inputRatio = Math.max(20, Math.min(90, Number(this.inputRatio)||60));
@@ -1105,7 +1305,7 @@ let QuickCmdsLiteSettingsTabComponent = class QuickCmdsLiteSettingsTabComponent 
     toggleAiGroup(group, checked) { this.aiExcludedGroups = checked ? this.aiExcludedGroups.filter(x => x !== group) : Array.from(new Set(this.aiExcludedGroups.concat([group]))) }
     clearAiGroups() { this.aiExcludedGroups = this.aiGroups.slice() }
     selectAiGroups() { this.aiExcludedGroups = [] }
-    saveAISettings() { const cfg = { baseURL: this.aiBaseURL, apiKey: this.aiApiKey, model: this.aiModel || 'auto', protocol: this.aiProtocol || 'chat', excludedGroups: this.aiExcludedGroups, candidateLimit: Math.max(10, Math.min(200, Number(this.aiCandidateLimit) || 50)) }; ai_1.saveSettings({ config: this.config }, cfg); this.aiCandidateLimit = cfg.candidateLimit; }
+    saveAISettings() { const cfg = { baseURL: this.aiBaseURL, apiKey: this.aiApiKey, model: this.aiModel || 'auto', protocol: this.aiProtocol || 'chat', excludedGroups: this.aiExcludedGroups, candidateLimit: Math.max(10, Math.min(200, Number(this.aiCandidateLimit) || 50)), includeHistory: this.aiIncludeHistory === true }; ai_1.saveSettings({ config: this.config }, cfg); this.aiCandidateLimit = cfg.candidateLimit; }
     testAI() {
         const cfg = { baseURL: this.aiBaseURL, apiKey: this.aiApiKey, model: this.aiModel || 'auto', protocol: this.aiProtocol || 'chat' };
         this.aiStatus = '正在连接…';
@@ -1159,7 +1359,7 @@ let QuickCmdsLiteConfigProvider = class QuickCmdsLiteConfigProvider extends tabb
                 dock: {
                     enabled: true,
                     maxSuggestions: 10,
-                    historySize: 30,
+                    historySize: 500,
                     history: [],
                     saveHistory: true,
                     showHistory: true,
@@ -1253,10 +1453,12 @@ QuickCmdsLiteModule = __decorate([
         ],
         declarations: [
             QuickCmdsLiteModalComponent,
+            QuickCmdsLiteOrganizerComponent,
             QuickCmdsLiteSettingsTabComponent,
         ],
         entryComponents: [
             QuickCmdsLiteModalComponent,
+            QuickCmdsLiteOrganizerComponent,
             QuickCmdsLiteSettingsTabComponent,
         ],
     })
@@ -1268,6 +1470,7 @@ exports.__internals = {
     CommandExecutorService,
     QuickCmdsLiteDockService,
     QuickCmdsLiteModalComponent,
+    QuickCmdsLiteOrganizerComponent,
     QuickCmdsLiteSettingsTabComponent,
     QuickCmdsLiteSettingsTabProvider,
     QuickCmdsLiteConfigProvider,
